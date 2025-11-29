@@ -1,0 +1,13 @@
+#cloud-config
+package_update: true
+package_upgrade: false
+
+hostname: "${K3S_NODE_NAME}"
+
+runcmd:
+  # Debug: show that template variables rendered correctly
+  - "echo 'DEBUG SERVER_IP=${SERVER_IP}' >> /var/log/tcg-k3s-agent-debug.log"
+  - "echo 'DEBUG K3S_TOKEN=${K3S_TOKEN}' >> /var/log/tcg-k3s-agent-debug.log"
+  - 'curl -sfL https://get.k3s.io | K3S_URL=https://${SERVER_IP}:6443 K3S_TOKEN=${K3S_TOKEN} sh -'
+
+
