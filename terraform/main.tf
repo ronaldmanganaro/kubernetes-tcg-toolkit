@@ -147,148 +147,22 @@ output "worker_ips" {
 }
 
 ###############################################
-# 4) BOOTSTRAP SERVICE ACCOUNT + RBAC
-###############################################
-
-resource "null_resource" "bootstrap_sa" {
-  depends_on = [linode_instance.server]
-
-  connection {
-    type        = "ssh"
-    host        = local.server_public_ip
-    user        = "root"
-    private_key = file(var.private_key_path)
-  }
-
-  provisioner "remote-exec" {
-    inline = [
-      "kubectl -n kube-system get sa argocd-bootstrap || kubectl create sa argocd-bootstrap -n kube-system",
-      "kubectl get clusterrolebinding argocd-bootstrap-admin || kubectl create clusterrolebinding argocd-bootstrap-admin --clusterrole=cluster-admin --serviceaccount=kube-system:argocd-bootstrap",
-      "kubectl apply -f - <<'EOF'\napiVersion: v1\nkind: Secret\nmetadata:\n  name: argocd-bootstrap-token\n  namespace: kube-system\n  annotations:\n    kubernetes.io/service-account.name: argocd-bootstrap\ntype: kubernetes.io/service-account-token\nEOF"
-    ]
-  }
-}
-
-
-###############################################
 # 5) FETCH TOKEN + CA + SERVER
 ###############################################
 
-
-resource "null_resource" "fetch_sa_creds" {
-  depends_on = [null_resource.bootstrap_sa]
-
+resource "null_resource" "fetch_kubeconfig" {
+  depends_on = [linode_instance.server]
+  
   connection {
     type        = "ssh"
     host        = local.server_public_ip
     user        = "root"
     private_key = file(var.private_key_path)
-  }
-
-  # 1. Create files on the server
-  provisioner "remote-exec" {
-    inline = [
-      "SECRET=$(kubectl get sa argocd-bootstrap -n kube-system -o jsonpath='{.secrets[0].name}')",
-      "TOKEN=$(kubectl create token argocd-bootstrap -n kube-system)",
-      "CA=$(kubectl get secret $SECRET -n kube-system -o jsonpath=\"{.data['ca.crt']}\")",
-      
-      "echo $TOKEN > /tmp/sa-token",
-      "echo $CA > /tmp/sa-ca",
-
-        # --- ADD THIS ---
-      "sync",
-      "sleep 2",
-      "ls -l /tmp/sa-token /tmp/sa-ca"
-      # ---------------
-    ]
   }
 
   # 2. Download the files from remote → local machine running Terraform
   provisioner "file" {
-    source      = "/tmp/sa-token"
-    destination = "${path.root}/out/sa-token"
-  }
-
-  provisioner "file" {
-    source      = "/tmp/sa-ca"
-    destination = "${path.root}/out/sa-ca"
-  }
-}
-
-
-###############################################
-# 6) BUILD KUBECONFIG FROM TEMPLATE
-###############################################
-
-
-
-
-data "local_file" "sa_token" {
-  depends_on = [null_resource.fetch_sa_creds]
-  filename   = "${path.module}/out/sa-token"
-}
-
-data "local_file" "sa_ca" {
-  depends_on = [null_resource.fetch_sa_creds]
-  filename   = "${path.module}/out/sa-ca"
-}
-
-
-locals {
-  sa_token  = trimspace(data.local_file.sa_token.content)
-  sa_ca     = trimspace(data.local_file.sa_ca.content)
-}
-
-
-resource "local_file" "k3s_kubeconfig" {
-  depends_on = [null_resource.fetch_sa_creds]
-
-  filename = "${path.module}/out/k3s-kubeconfig.yaml"
-
-  content = templatefile("${path.module}/kubeconfig.tpl", {
-    TOKEN       = local.sa_token
-    CA_CERT_B64 = local.sa_ca
-    SERVER      = local.server_public_ip
-  })
-}
-
-###############################################
-# 7) SEND KUBECONFIG TO MGMT NODE AND REGISTER
-###############################################
-
-resource "null_resource" "send_kubeconfig_to_mgmt" {
-  depends_on = [local_file.k3s_kubeconfig]
-
-  connection {
-    type        = "ssh"
-    host        = var.argocd_ip
-    user        = "root"
-    private_key = file(var.private_key_path)
-  }
-
-  provisioner "file" {
-    source      = "${path.module}/out/k3s-kubeconfig.yaml"
-    destination = "/tmp/k3s-kubeconfig.yaml"
-  }
-}
-
-
-
-resource "null_resource" "register_k3s_with_argocd" {
-  depends_on = [null_resource.send_kubeconfig_to_mgmt]
-
-  connection {
-    type        = "ssh"
-    host        = var.argocd_ip
-    user        = "root"
-    private_key = file(var.private_key_path)
-  }
-
-  provisioner "remote-exec" {
-    inline = [
-      "argocd login ${var.argocd_url} --username admin --password ${var.argocd_password} --insecure",
-      "argocd cluster rm k3s --yes",
-      "argocd cluster add k3s-context --kubeconfig /tmp/k3s-kubeconfig.yaml --name k3s --yes --insecure"
-    ]
+    source      = "/etc/rancher/k3s/k3s.yaml"
+    destination = "${path.root}/out/k3s-yaml"
   }
 }
